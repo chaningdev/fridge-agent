@@ -40,10 +40,11 @@ _DISH_PROMPT = """
 添付の画像は完成した料理の写真です。
 
 この料理を作るために使われたと思われる主な食材を推定してください。
-- 主材料・副材料を含める
-- 調味料（醤油・塩・砂糖など）は省略可
+- 主材料・副材料を含める（野菜・肉・魚・豆腐・卵など）
+- 調味料（醤油・塩・砂糖・みりん・酒など）は省略する
 - 数量は一人前の目安を記載
-- 単位が不明な場合は "適量" にする
+- g / ml / 個 / 枚 / 本 / 切れ / 合 など適切な単位を使う
+- 判断できない食材は "適量" を 0.5 として扱う
 
 必ず以下のJSON形式 **のみ** を返してください（説明文不要）:
 [
@@ -88,10 +89,22 @@ def _call_gemini(contents, max_retries: int = 3) -> str:
 def _parse_json_response(text: str) -> list[dict]:
     """Extract JSON array from model response, stripping markdown fences."""
     text = text.strip()
-    # Strip ```json ... ``` fences if present
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
-    return json.loads(text)
+    # Fallback: extract first [...] block if outer text is present
+    match = re.search(r"\[.*\]", text, re.DOTALL)
+    if match:
+        text = match.group(0)
+    data = json.loads(text)
+    # Normalize: ensure required keys exist
+    result = []
+    for item in data:
+        result.append({
+            "name": str(item.get("name", "不明")),
+            "quantity": float(item.get("quantity", 1)),
+            "unit": str(item.get("unit", "個")),
+        })
+    return result
 
 
 def parse_receipt(image_path: str | Path) -> list[dict]:
