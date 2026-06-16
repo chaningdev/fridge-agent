@@ -164,13 +164,21 @@ def cmd_recipe():
 
 
 def cmd_seed():
+    from datetime import date, timedelta
+    today = date.today()
     seeds = [
-        ("卵", 6, "個"), ("牛乳", 1, "L"), ("鶏もも肉", 300, "g"),
-        ("玉ねぎ", 2, "個"), ("にんじん", 1, "本"), ("じゃがいも", 3, "個"),
-        ("豆腐", 1, "丁"), ("ほうれん草", 0.5, "袋"),
+        # (name, qty, unit, category, expires_at)
+        ("鶏もも肉",   300,  "g",  "肉・魚",  (today + timedelta(days=2)).isoformat()),
+        ("牛乳",       1,   "L",   "乳製品",  (today + timedelta(days=3)).isoformat()),
+        ("ほうれん草", 1,   "袋",  "野菜",    (today + timedelta(days=4)).isoformat()),
+        ("豆腐",       1,   "丁",  "乳製品",  (today + timedelta(days=5)).isoformat()),
+        ("卵",         6,   "個",  "卵",      (today + timedelta(days=14)).isoformat()),
+        ("にんじん",   2,   "本",  "野菜",    (today + timedelta(days=20)).isoformat()),
+        ("じゃがいも", 3,   "個",  "野菜",    (today + timedelta(days=25)).isoformat()),
+        ("玉ねぎ",     2,   "個",  "野菜",    (today + timedelta(days=30)).isoformat()),
     ]
-    for name, qty, unit in seeds:
-        db.upsert_item(name, qty, unit, source="manual")
+    for name, qty, unit, cat, exp in seeds:
+        db.upsert_item(name, qty, unit, source="manual", category=cat, expires_at=exp)
     print(f"  ✓ {len(seeds)} 種類のデモデータを投入しました")
     _show_inventory()
 
