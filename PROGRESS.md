@@ -11,7 +11,7 @@
 
 - Day1〜7 を一通り実装完了。**全テスト 39 件パス**（`python -m pytest -q`）。
 - 直近の作業: `src/agent.py`（GPT 自律 Tool 呼び出し）を新規実装し、router / demo / app に配線。README 作成。
-- ⚠️ **未コミットの変更あり**（下記「次の作業」参照）。
+- ここまでの実装はすべてコミット済み。**次の大物は GitHub 公開（リモート未設定）**。
 
 ## ✅ 完了済み（Day 別）
 
@@ -21,14 +21,14 @@
 | 2 | parse_receipt_tool | ✅ コミット済み |
 | 3 | recognize_dish_tool + router.py | ✅ コミット済み |
 | 4 | db.py 在庫ロジック + テスト | ✅ コミット済み |
-| 5 | **agent.py**（GPT自律Tool呼び出し）+ router 配線 | ✅ 実装済み・**未コミット** |
-| 6 | Streamlit UI (app.py) / CLI (demo.py) + エージェントモード | ✅ 実装済み（UIへの配線分が未コミット） |
-| 7 | README.md | ✅ 作成済み・**未コミット** |
+| 5 | **agent.py**（GPT自律Tool呼び出し）+ router 配線 | ✅ コミット済み |
+| 6 | Streamlit UI (app.py) / CLI (demo.py) + エージェントモード | ✅ コミット済み |
+| 7 | README.md | ✅ コミット済み |
 
 ## 📌 次の作業（TODO）
 
-- [ ] 変更分をコミットする（未コミット: `src/agent.py`, `tests/test_agent.py`, `README.md`, `PROGRESS.md` 新規 + `src/router.py` `demo.py` `app.py` `requirements.txt` 変更）
-- [ ] GitHub リモートを作成して push（Day7「GitHub公開」）
+- [x] 変更分をコミットする（Day5〜7 + 引き継ぎ文書、計4コミット完了）
+- [ ] GitHub リモートを作成して push（Day7「GitHub公開」）← **次はここ**
 - [ ] 実機で Gemini / OpenAI の動作確認（`.env` にキー設定後 `python check_api.py`）
 - [ ] （任意）レシート・料理写真のサンプル画像を用意して画像認識をデモ
 
