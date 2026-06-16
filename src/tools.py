@@ -95,6 +95,30 @@ def check_expiring_tool(days: int = 3) -> dict:
     return {"expiring": items, "count": len(items), "days": days}
 
 
+def consume_by_dish_name_tool(dish_name: str) -> dict:
+    """
+    料理名のテキストから標準食材を推定し在庫から消費する。
+    例: "カレー"、"肉じゃが"、"親子丼を食べた"
+
+    Returns:
+        {"dish": str, "ingredients": [...], "consumed": [...], "not_found": [...]}
+    """
+    # 「〜を食べた」などの表現から料理名だけ取り出す
+    import re
+    clean = re.sub(r"(を食べた|食べた|を作った|作った|を食べました)$", "", dish_name.strip())
+    items = vision.ingredients_from_dish_name(clean)
+    consumed, not_found = [], []
+    for item in items:
+        ok = db.consume_item(item["name"], float(item.get("quantity", 1)), source="dish_name")
+        (consumed if ok else not_found).append(item)
+    return {
+        "dish": clean,
+        "ingredients": items,
+        "consumed": consumed,
+        "not_found": not_found,
+    }
+
+
 def check_inventory_tool() -> dict:
     """在庫一覧を返す。"""
     items = db.get_inventory()
@@ -103,13 +127,16 @@ def check_inventory_tool() -> dict:
 
 def shopping_list_tool(threshold: float = 1.0) -> dict:
     """
-    在庫が閾値以下のアイテムを買い物リストとして返す。
+    在庫が閾値以下のアイテムを買い物リストとして返す（完成品は除外）。
 
     Args:
         threshold: この数量以下のアイテムをリストアップ
     """
     items = db.get_inventory()
-    low = [i for i in items if i["quantity"] <= threshold]
+    low = [
+        i for i in items
+        if i["quantity"] <= threshold and i.get("category") != db.READY_FOOD_CATEGORY
+    ]
     return {"shopping_list": low, "count": len(low)}
 
 
@@ -128,6 +155,11 @@ def suggest_recipe_tool(max_items: int = 5) -> dict:
     items = db.get_inventory()
     if not items:
         return {"error": "在庫が空です。先に食材を登録してください。"}
+
+    # 完成品カテゴリは献立提案の食材リストから除外（料理の材料にはならない）
+    items = [i for i in items if i.get("category") != db.READY_FOOD_CATEGORY]
+    if not items:
+        return {"error": "食材（完成品以外）が在庫にありません。先に食材を登録してください。"}
 
     item_list = "\n".join(f"- {i['name']}: {i['quantity']}{i['unit']}" for i in items)
     prompt = (

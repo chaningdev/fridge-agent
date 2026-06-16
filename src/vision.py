@@ -117,23 +117,50 @@ def _call_gemini(contents, max_retries: int = 4) -> str:
 
 
 def _parse_json_response(text: str) -> list[dict]:
-    """Extract JSON array from model response, stripping markdown fences."""
+    """Extract JSON array from model response with multiple fallback strategies."""
+    original = text
     text = text.strip()
+
+    # 1. コードフェンスを除去
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
-    # Fallback: extract first [...] block if outer text is present
+    text = text.strip()
+
+    # 2. [...] ブロックを抽出（前後に余分なテキストがある場合）
     match = re.search(r"\[.*\]", text, re.DOTALL)
     if match:
         text = match.group(0)
-    data = json.loads(text)
-    # Normalize: ensure required keys exist
+
+    # 3. JSON パース（失敗したら末尾の不完全なエントリを除去して再試行）
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        # 末尾の不完全エントリ除去: 最後の完結した } までを残す
+        truncated = re.sub(r",?\s*\{[^}]*$", "", text).rstrip(",").strip()
+        if not truncated.endswith("]"):
+            truncated += "]"
+        try:
+            data = json.loads(truncated)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Gemini のレスポンスを JSON に変換できませんでした: {e}\n---\n{original[:300]}") from e
+
+    if not isinstance(data, list):
+        raise ValueError(f"期待するJSON配列ではありません: {type(data)}")
+
+    # 4. 各アイテムのキーを正規化
     result = []
     for item in data:
-        result.append({
-            "name": str(item.get("name", "不明")),
-            "quantity": float(item.get("quantity", 1)),
-            "unit": str(item.get("unit", "個")),
-        })
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("食材名") or "不明").strip()
+        if name in ("不明", ""):
+            continue
+        try:
+            qty = float(item.get("quantity") or item.get("数量") or 1)
+        except (TypeError, ValueError):
+            qty = 1.0
+        unit = str(item.get("unit") or item.get("単位") or "個").strip()
+        result.append({"name": name, "quantity": qty, "unit": unit})
     return result
 
 
@@ -148,4 +175,28 @@ def recognize_dish(image_path: str | Path) -> list[dict]:
     """Return estimated ingredients {name, quantity, unit} from a dish photo."""
     img = _load_image_part(image_path)
     raw = _call_gemini([img, _DISH_PROMPT])
+    return _parse_json_response(raw)
+
+
+_DISH_NAME_PROMPT_TMPL = """
+あなたは料理の食材を把握するアシスタントです。
+
+「{dish_name}」を1人前作るときに必要な主な食材を答えてください。
+- 調味料（醤油・塩・砂糖・みりん・酒・油など）は除外する
+- 主材料・副材料のみを含める
+- 数量は1人前の目安
+- 単位は g / ml / 個 / 枚 / 本 / 丁 / 袋 など適切なものを使う
+
+必ず以下のJSON形式 **のみ** を返してください（説明文不要）:
+[
+  {{"name": "食材名", "quantity": 数値, "unit": "単位"}},
+  ...
+]
+""".strip()
+
+
+def ingredients_from_dish_name(dish_name: str) -> list[dict]:
+    """Return typical ingredients for a named dish (text-only, no image)."""
+    prompt = _DISH_NAME_PROMPT_TMPL.format(dish_name=dish_name.strip())
+    raw = _call_gemini([prompt])
     return _parse_json_response(raw)
