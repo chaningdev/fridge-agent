@@ -200,3 +200,19 @@ def ingredients_from_dish_name(dish_name: str) -> list[dict]:
     prompt = _DISH_NAME_PROMPT_TMPL.format(dish_name=dish_name.strip())
     raw = _call_gemini([prompt])
     return _parse_json_response(raw)
+
+
+_DETECT_TYPE_PROMPT = """
+この画像は次のどちらですか？
+A. レシート（スーパーや食料品店の購入明細・領収書）
+B. 料理写真（完成した料理・食べ物の画像）
+
+必ず英語1単語のみを返してください: "receipt" または "dish"
+""".strip()
+
+
+def detect_image_type(image_path: str | Path) -> str:
+    """Return 'receipt' or 'dish' by classifying the image with Gemini."""
+    img = _load_image_part(image_path)
+    raw = _call_gemini([img, _DETECT_TYPE_PROMPT]).strip().lower()
+    return "receipt" if "receipt" in raw else "dish"
