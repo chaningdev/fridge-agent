@@ -4,6 +4,7 @@ Run: python demo.py
 """
 
 import io
+import os
 import sys
 from pathlib import Path
 
@@ -14,6 +15,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() in ("cp932", "cp936", "gb
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from src import agent
 from src import db
 from src import tools
 
@@ -53,6 +55,7 @@ MENU = """
  7. 料理写真から消費する    [Gemini必要]
  8. 献立を提案する          [OpenAI必要]
  9. デモデータを投入する
+ a. AIエージェントに目標を伝える [自然文・自律Tool呼び出し]
  0. 終了
 =====================================
 """
@@ -172,6 +175,24 @@ def cmd_seed():
     _show_inventory()
 
 
+def cmd_agent():
+    print("  目標を自然文で入力してください。")
+    print("  例: 在庫を確認して / トマトを3個追加して / 足りないものを教えて / 献立を提案して")
+    goal = input("  目標 > ").strip()
+    if not goal:
+        return
+    mode = "GPT自律呼び出し" if os.environ.get("OPENAI_API_KEY") else "ルールベース（OPENAI_API_KEY未設定）"
+    print(f"  [モード: {mode}] 処理中...")
+    result = agent.run_agent(goal)
+    for step in result.get("trace", []):
+        print(f"    🔧 {step['tool']} [{step['backend']}]")
+    if result.get("fallback"):
+        print(f"    ! {result['fallback']}")
+    _hr()
+    print(result["reply"])
+    _hr()
+
+
 COMMANDS = {
     "1": cmd_check,
     "2": cmd_add,
@@ -182,6 +203,7 @@ COMMANDS = {
     "7": cmd_dish,
     "8": cmd_recipe,
     "9": cmd_seed,
+    "a": cmd_agent,
 }
 
 
@@ -189,7 +211,7 @@ def main():
     print(MENU)
     while True:
         try:
-            choice = input("選択 > ").strip()
+            choice = input("選択 > ").strip().lower()
         except (KeyboardInterrupt, EOFError):
             print("\n終了します")
             break
@@ -205,7 +227,7 @@ def main():
             except Exception as e:
                 print(f"  [ERROR] {e}")
         else:
-            print("  0〜9 で選択してください")
+            print("  0〜9 または a で選択してください")
 
         print()
 
