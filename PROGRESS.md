@@ -3,7 +3,7 @@
 複数PC間でセッションを引き継ぐための作業メモ。
 **作業を再開する人（または Claude）は、まずこのファイルを読むこと。**
 
-最終更新: 2026-06-16
+最終更新: 2026-06-17
 
 ---
 
@@ -11,7 +11,8 @@
 
 - Day1〜7 を一通り実装完了。**全テスト 39 件パス**（`python -m pytest -q`）。
 - 直近の作業: `src/agent.py`（GPT 自律 Tool 呼び出し）を新規実装し、router / demo / app に配線。README 作成。
-- ここまでの実装はすべてコミット済み。**次の大物は GitHub 公開（リモート未設定）**。
+- ここまでの実装はすべてコミット済み・push済み。GitHub: https://github.com/chaningdev/fridge-agent
+- 直近の作業: 標準賞味期限の自動補完（`src/expiry_master.py`）。全テスト 66 件パス。
 
 ## ✅ 完了済み（Day 別）
 
@@ -32,7 +33,8 @@
 - [x] 画像アップロードをサイドバーに統合・レシート/料理を自動判別
 - [x] 消費確認画面（テキスト/エージェント）・端数管理・単位拡充
 - [ ] 実機で Gemini / OpenAI の動作確認（`.env` にキー設定後 `python check_api.py`）
-- [ ] IMPROVEMENTS.md の残り🟡項目（標準賞味期限補完・LINE通知・料理写真精度向上 など）
+- [x] 標準賞味期限の自動補完（`src/expiry_master.py` 新規作成）
+- [ ] IMPROVEMENTS.md の残り🟡項目（RAG化・LINE通知・料理写真精度向上 など）
 
 ## 🔄 別PCで作業を再開する手順
 
