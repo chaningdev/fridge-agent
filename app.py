@@ -9,7 +9,12 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src import agent, db, tools
+import importlib
+import src.db as db
+import src.tools as tools
+import src.agent as agent
+importlib.reload(db)   # Streamlit の sys.modules キャッシュを無効化
+importlib.reload(tools)
 
 db.init_db()
 
@@ -204,29 +209,38 @@ elif page == "📸 画像読み込み":
         st.image(uploaded, width=300)
 
         if st.button("🔍 Gemini で解析する", type="primary"):
-            with st.spinner("Gemini に送信中..."):
-                with tempfile.NamedTemporaryFile(suffix=Path(uploaded.name).suffix, delete=False) as f:
-                    f.write(uploaded.read())
-                    tmp_path = f.name
+            with st.spinner("Gemini に送信中（混雑時は自動リトライします）..."):
+                try:
+                    with tempfile.NamedTemporaryFile(suffix=Path(uploaded.name).suffix, delete=False) as f:
+                        f.write(uploaded.read())
+                        tmp_path = f.name
 
-                if "レシート" in mode:
-                    result = tools.parse_receipt_tool(tmp_path)
-                    if "error" in result:
-                        st.error(result["error"])
+                    if "レシート" in mode:
+                        result = tools.parse_receipt_tool(tmp_path)
+                        if "error" in result:
+                            st.error(result["error"])
+                        else:
+                            st.success(f"✅ {result['count']} 件の食材を在庫に追加しました")
+                            for item in result["added"]:
+                                st.write(f"  - **{item['name']}** {item['quantity']}{item['unit']}")
                     else:
-                        st.success(f"✅ {result['count']} 件の食材を在庫に追加しました")
-                        for item in result["added"]:
-                            st.write(f"  - **{item['name']}** {item['quantity']}{item['unit']}")
-                else:
-                    result = tools.recognize_dish_tool(tmp_path)
-                    if "error" in result:
-                        st.error(result["error"])
+                        result = tools.recognize_dish_tool(tmp_path)
+                        if "error" in result:
+                            st.error(result["error"])
+                        else:
+                            st.success(f"✅ {len(result['consumed'])} 種類を消費しました")
+                            for item in result["consumed"]:
+                                st.write(f"  - **{item['name']}** {item['quantity']}{item['unit']}")
+                            if result["not_found"]:
+                                st.warning(f"在庫になかった食材: {[i['name'] for i in result['not_found']]}")
+                except Exception as e:
+                    err = str(e)
+                    if "503" in err or "UNAVAILABLE" in err:
+                        st.error("⚠️ Gemini サーバーが混雑しています。しばらく待ってから再試行してください。")
+                    elif "429" in err:
+                        st.error("⚠️ APIのレート制限に達しました。少し時間をおいてから再試行してください。")
                     else:
-                        st.success(f"✅ {len(result['consumed'])} 種類を消費しました")
-                        for item in result["consumed"]:
-                            st.write(f"  - **{item['name']}** {item['quantity']}{item['unit']}")
-                        if result["not_found"]:
-                            st.warning(f"在庫になかった食材: {[i['name'] for i in result['not_found']]}")
+                        st.error(f"❌ エラーが発生しました: {err}")
     else:
         st.info("画像をアップロードすると Gemini が自動で食材を認識します")
 

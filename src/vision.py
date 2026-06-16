@@ -68,7 +68,7 @@ def _load_image_part(image_path: str | Path):
     return types.Part.from_bytes(data=path.read_bytes(), mime_type=mime)
 
 
-def _call_gemini(contents, max_retries: int = 3) -> str:
+def _call_gemini(contents, max_retries: int = 4) -> str:
     client = _get_client()
     for attempt in range(max_retries):
         try:
@@ -78,9 +78,11 @@ def _call_gemini(contents, max_retries: int = 3) -> str:
             )
             return response.text
         except Exception as e:
-            if "429" in str(e) and attempt < max_retries - 1:
-                wait = 2 ** attempt
-                print(f"[vision] rate-limited, retrying in {wait}s…")
+            err = str(e)
+            is_retryable = "429" in err or "503" in err or "UNAVAILABLE" in err
+            if is_retryable and attempt < max_retries - 1:
+                wait = 2 ** attempt   # 1s → 2s → 4s → 8s
+                print(f"[vision] {err[:60]}… retry {attempt+1}/{max_retries-1} in {wait}s")
                 time.sleep(wait)
             else:
                 raise
