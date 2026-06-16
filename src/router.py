@@ -32,6 +32,23 @@ class RouteResult:
     kwargs: dict
 
 
+# Tool → backend の対応（マルチベンダー・ルーティングの単一の真実）。
+# agent.py はツール実行ごとにここを参照して、どのベンダーが処理したかを記録する。
+TOOL_BACKENDS = {
+    "parse_receipt_tool":   "gemini",
+    "recognize_dish_tool":  "gemini",
+    "update_inventory_tool": "sqlite",
+    "check_inventory_tool": "sqlite",
+    "shopping_list_tool":   "sqlite",
+    "suggest_recipe_tool":  "openai",
+}
+
+
+def backend_for_tool(tool_name: str) -> str:
+    """ツール名から担当バックエンド（gemini/openai/sqlite）を返す。"""
+    return TOOL_BACKENDS.get(tool_name, "unknown")
+
+
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
 # Keyword sets for intent detection
