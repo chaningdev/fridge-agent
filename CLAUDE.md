@@ -1,7 +1,9 @@
 # Fridge Agent — 冷蔵庫在庫管理AIエージェント
 
-> 📌 **作業を再開するときは、まず [PROGRESS.md](PROGRESS.md) を読むこと。**
-> 現在の進捗・次の作業・PC間引き継ぎ情報がまとまっている（複数PCで開発するため）。
+> 📌 **作業を再開するときは、以下の順で必ず読むこと（複数PCで開発するため）。**
+> 1. [PROGRESS.md](PROGRESS.md) — 現在の進捗・次の作業・PC間引き継ぎ情報
+> 2. [IMPROVEMENTS.md](IMPROVEMENTS.md) — ユーザーが使いながら書いた改善メモ（新しい内容があれば作業に反映する）
+> 3. [DECISIONS.md](DECISIONS.md) — 設計判断の記録（ポートフォリオ用）
 
 ## 1. プロジェクトの目的
 
