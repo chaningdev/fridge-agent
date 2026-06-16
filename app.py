@@ -7,6 +7,14 @@ from pathlib import Path
 
 import streamlit as st
 
+# Streamlit Cloud: Secrets を os.environ に転写（dotenv の代替）
+try:
+    for _k, _v in st.secrets.items():
+        if _k not in os.environ:
+            os.environ[_k] = str(_v)
+except Exception:
+    pass  # ローカル環境では st.secrets が空なのでスキップ
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 import importlib
@@ -17,6 +25,29 @@ importlib.reload(db)   # Streamlit の sys.modules キャッシュを無効化
 importlib.reload(tools)
 
 db.init_db()
+
+# デモ用初期データ（在庫が空のときだけ投入）
+def _seed_demo() -> None:
+    from datetime import date, timedelta
+    if db.get_inventory():
+        return
+    today = date.today()
+    demo_items = [
+        ("卵",       6,   "個",  "卵",    None),
+        ("牛乳",     1,   "L",   "乳製品", (today + timedelta(days=2)).isoformat()),
+        ("鶏もも肉", 300, "g",   "肉・魚", (today + timedelta(days=1)).isoformat()),
+        ("玉ねぎ",   3,   "個",  "野菜",   None),
+        ("じゃがいも", 4, "個",  "野菜",   None),
+        ("にんじん",  2,  "本",  "野菜",   (today + timedelta(days=10)).isoformat()),
+        ("豆腐",      1,  "丁",  "その他", (today + timedelta(days=4)).isoformat()),
+        ("ご飯",      2,  "合",  "穀物",   None),
+        ("ポテトチップス", 1, "袋", "完成品", None),
+        ("カップ麺",  2,  "個",  "完成品", None),
+    ]
+    for name, qty, unit, cat, exp in demo_items:
+        db.upsert_item(name, qty, unit, source="demo", category=cat, expires_at=exp)
+
+_seed_demo()
 
 # ── ページ設定 ────────────────────────────────────────────────────────────────
 st.set_page_config(
