@@ -74,6 +74,16 @@ st.sidebar.caption("レシート・料理写真を自動判別して処理しま
 
 _SB_DISH_KEY     = "sb_dish_pending"
 _SB_RECEIPT_KEY  = "sb_receipt_result"
+_DISH_CONFIRM_KEY = "dish_name_confirm_pending"  # テキスト入力 / エージェントの消費確認
+
+import re as _re
+_CONSUME_RE = _re.compile(r"(食べた|食べました|を食べ|食った|作った|作りました)")
+
+def _detect_dish_consume(goal: str) -> str | None:
+    """料理消費ゴールなら料理名を返す。それ以外は None。"""
+    if _CONSUME_RE.search(goal):
+        return _re.sub(r"(を食べた|食べた|を食べました|食べました|を食べ|食った|を作った|作った|作りました).*$", "", goal).strip() or None
+    return None
 
 sb_file = st.sidebar.file_uploader(
     "画像を選択",
@@ -192,23 +202,80 @@ if page == "🤖 エージェント":
     else:
         st.caption("⚠️ OPENAI_API_KEY 未設定のため、キーワードによるルールベースで動作します。")
 
-    examples = "例: 「在庫を確認して」「トマトを3個追加して」「足りないものを教えて」「献立を提案して」"
-    goal = st.text_input("目標", placeholder=examples)
+    # ── 料理消費の確認フォーム ────────────────────────────────────────────────────
+    if _DISH_CONFIRM_KEY in st.session_state:
+        pending = st.session_state[_DISH_CONFIRM_KEY]
+        st.subheader(f"🍽️ **{pending['dish']}** の推定食材（確認してから消費）")
+        st.caption("チェックを外すと消費しません。食材名・数量も修正できます。")
 
-    if st.button("🚀 実行", type="primary") and goal.strip():
-        with st.spinner("エージェントが処理中..."):
-            result = agent.run_agent(goal.strip())
-
-        if result.get("fallback"):
-            st.warning(result["fallback"])
-
-        if result.get("trace"):
-            with st.expander("🔧 呼び出したTool（マルチベンダー・ルーティング）", expanded=True):
-                for step in result["trace"]:
-                    st.write(f"- `{step['tool']}` → **{step['backend']}**")
+        edited = []
+        for i, item in enumerate(pending["items"]):
+            col_chk, col_name, col_qty, col_unit = st.columns([0.5, 3, 1.5, 1.5])
+            checked = col_chk.checkbox("", value=True, key=f"ag_chk_{i}")
+            name    = col_name.text_input("食材名", value=item["name"], key=f"ag_name_{i}", label_visibility="collapsed")
+            qty     = col_qty.number_input("数量", value=float(item["quantity"]), min_value=0.0, step=0.5, key=f"ag_qty_{i}", label_visibility="collapsed")
+            unit    = col_unit.text_input("単位", value=item["unit"], key=f"ag_unit_{i}", label_visibility="collapsed")
+            if checked and name.strip():
+                edited.append({"name": name.strip(), "quantity": qty, "unit": unit})
 
         st.divider()
-        st.markdown(result["reply"])
+        col_ok, col_cancel = st.columns([1, 1])
+        if col_ok.button("✅ 確認して在庫から消費", type="primary", key="ag_dish_ok"):
+            consumed, not_found = [], []
+            for item in edited:
+                ok = db.consume_item(item["name"], item["quantity"], source="dish_name")
+                (consumed if ok else not_found).append(item)
+            del st.session_state[_DISH_CONFIRM_KEY]
+            if consumed:
+                st.success(f"✅ {len(consumed)} 種類を消費しました")
+                for item in consumed:
+                    st.write(f"  - **{item['name']}** {item['quantity']}{item['unit']}")
+            if not_found:
+                st.warning("在庫になかった食材（スキップ）:")
+                for item in not_found:
+                    st.write(f"  ⚠️ {item['name']}")
+            st.rerun()
+        if col_cancel.button("❌ キャンセル", key="ag_dish_cancel"):
+            del st.session_state[_DISH_CONFIRM_KEY]
+            st.rerun()
+
+    # ── 通常のエージェント入力 ────────────────────────────────────────────────────
+    else:
+        examples = "例: 「在庫を確認して」「トマトを3個追加して」「足りないものを教えて」「献立を提案して」"
+        goal = st.text_input("目標", placeholder=examples)
+
+        if st.button("🚀 実行", type="primary") and goal.strip():
+            dish = _detect_dish_consume(goal.strip())
+            if dish:
+                # 料理消費は確認フローへ
+                with st.spinner("Gemini で食材を推定中..."):
+                    try:
+                        est = tools.consume_by_dish_name_tool(goal.strip(), dry_run=True)
+                        if not est["estimated"]:
+                            st.warning("食材を推定できませんでした。別の表現で試してください。")
+                        else:
+                            st.session_state[_DISH_CONFIRM_KEY] = {"dish": est["dish"], "items": est["estimated"]}
+                            st.rerun()
+                    except Exception as e:
+                        err = str(e)
+                        if "503" in err or "UNAVAILABLE" in err:
+                            st.error("⚠️ Gemini が混雑しています。しばらく待ってから再試行してください。")
+                        else:
+                            st.error(f"❌ {err}")
+            else:
+                with st.spinner("エージェントが処理中..."):
+                    result = agent.run_agent(goal.strip())
+
+                if result.get("fallback"):
+                    st.warning(result["fallback"])
+
+                if result.get("trace"):
+                    with st.expander("🔧 呼び出したTool（マルチベンダー・ルーティング）", expanded=True):
+                        for step in result["trace"]:
+                            st.write(f"- `{step['tool']}` → **{step['backend']}**")
+
+                st.divider()
+                st.markdown(result["reply"])
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 在庫ページ
@@ -307,7 +374,7 @@ elif page == "➕ 追加・消費":
             name = st.text_input("食材名", placeholder="例: 卵")
             col1, col2 = st.columns(2)
             qty  = col1.number_input("数量", min_value=0.1, value=1.0, step=0.5)
-            unit = col2.selectbox("単位", ["個", "g", "ml", "本", "枚", "丁", "袋", "L", "合", "切れ"])
+            unit = col2.selectbox("単位", ["個", "玉", "束", "本", "枚", "丁", "袋", "缶", "パック", "g", "ml", "L", "合", "切れ"])
             col3, col4 = st.columns(2)
             from src.db import CATEGORIES
             category = col3.selectbox("カテゴリ", CATEGORIES)
@@ -335,44 +402,86 @@ elif page == "➕ 追加・消費":
                 st.info("在庫がありません")
             else:
                 with st.form("consume_form"):
-                    names = [i["name"] for i in items]
-                    selected = st.selectbox("食材", names)
-                    qty = st.number_input("消費量", min_value=0.1, value=1.0, step=0.5)
+                    selected_item = st.selectbox(
+                        "食材",
+                        items,
+                        format_func=lambda i: f"{i['name']}　（現在: {i['quantity']}{i['unit']}）",
+                    )
+                    qty = st.number_input("消費量", min_value=0.0, value=0.5, step=0.5)
                     submitted = st.form_submit_button("消費する", type="primary")
 
                 if submitted:
-                    result = tools.update_inventory_tool(selected, qty, action="consume")
-                    if result.get("success"):
-                        st.success(f"✅ **{selected}** {qty} を消費しました")
-                        st.rerun()
+                    if qty <= 0:
+                        st.error("消費量は 0 より大きい値を入力してください")
                     else:
-                        st.error("❌ 在庫が見つかりません")
+                        result = tools.update_inventory_tool(selected_item["name"], qty, action="consume")
+                        if result.get("success"):
+                            st.success(f"✅ **{selected_item['name']}** {qty}{selected_item['unit']} を消費しました")
+                            st.rerun()
+                        else:
+                            st.error("❌ 在庫が見つかりません")
 
         with sub_tab_dish:
-            st.caption("料理名を入力すると、その料理の標準食材を在庫から自動消費します")
-            dish_input = st.text_input("料理名", placeholder="例: カレー、肉じゃが、親子丼を食べた")
-            if st.button("🍽️ 消費する", type="primary", key="consume_dish"):
-                if not dish_input.strip():
-                    st.error("料理名を入力してください")
-                else:
-                    with st.spinner("Gemini で食材を推定中..."):
-                        try:
-                            result = tools.consume_by_dish_name_tool(dish_input)
-                            st.success(f"**{result['dish']}** の食材を消費しました")
-                            if result["consumed"]:
-                                st.write("消費した食材:")
-                                for item in result["consumed"]:
-                                    st.write(f"  ✅ {item['name']} {item['quantity']}{item['unit']}")
-                            if result["not_found"]:
-                                st.warning("在庫になかった食材（スキップ）:")
-                                for item in result["not_found"]:
-                                    st.write(f"  ⚠️ {item['name']}")
-                        except Exception as e:
-                            err = str(e)
-                            if "503" in err or "UNAVAILABLE" in err:
-                                st.error("⚠️ Gemini が混雑しています。しばらくしてから再試行してください。")
-                            else:
-                                st.error(f"❌ {err}")
+            st.caption("料理名を入力すると Gemini が食材を推定します。確認してから消費できます。")
+
+            # ── Step 1: 料理名入力 ──────────────────────────────────────────────
+            if _DISH_CONFIRM_KEY not in st.session_state:
+                dish_input = st.text_input("料理名", placeholder="例: カレー、肉じゃが、親子丼を食べた")
+                if st.button("🔍 食材を推定する", type="primary", key="consume_dish"):
+                    if not dish_input.strip():
+                        st.error("料理名を入力してください")
+                    else:
+                        with st.spinner("Gemini で食材を推定中..."):
+                            try:
+                                est = tools.consume_by_dish_name_tool(dish_input, dry_run=True)
+                                if not est["estimated"]:
+                                    st.warning("食材を推定できませんでした。別の表現で試してください。")
+                                else:
+                                    st.session_state[_DISH_CONFIRM_KEY] = {"dish": est["dish"], "items": est["estimated"]}
+                                    st.rerun()
+                            except Exception as e:
+                                err = str(e)
+                                if "503" in err or "UNAVAILABLE" in err:
+                                    st.error("⚠️ Gemini が混雑しています。しばらくしてから再試行してください。")
+                                else:
+                                    st.error(f"❌ {err}")
+
+            # ── Step 2: 確認・編集フォーム ─────────────────────────────────────
+            else:
+                pending = st.session_state[_DISH_CONFIRM_KEY]
+                st.subheader(f"🍽️ **{pending['dish']}** の推定食材")
+                st.caption("チェックを外すと消費しません。食材名・数量も修正できます。")
+
+                edited = []
+                for i, item in enumerate(pending["items"]):
+                    col_chk, col_name, col_qty, col_unit = st.columns([0.5, 3, 1.5, 1.5])
+                    checked = col_chk.checkbox("", value=True, key=f"dc_chk_{i}")
+                    name    = col_name.text_input("食材名", value=item["name"], key=f"dc_name_{i}", label_visibility="collapsed")
+                    qty     = col_qty.number_input("数量", value=float(item["quantity"]), min_value=0.0, step=0.5, key=f"dc_qty_{i}", label_visibility="collapsed")
+                    unit    = col_unit.text_input("単位", value=item["unit"], key=f"dc_unit_{i}", label_visibility="collapsed")
+                    if checked and name.strip():
+                        edited.append({"name": name.strip(), "quantity": qty, "unit": unit})
+
+                st.divider()
+                col_ok, col_cancel = st.columns([1, 1])
+                if col_ok.button("✅ 確認して在庫から消費", type="primary", key="dc_ok"):
+                    consumed, not_found = [], []
+                    for item in edited:
+                        ok = db.consume_item(item["name"], item["quantity"], source="dish_name")
+                        (consumed if ok else not_found).append(item)
+                    del st.session_state[_DISH_CONFIRM_KEY]
+                    if consumed:
+                        st.success(f"✅ {len(consumed)} 種類を消費しました")
+                        for item in consumed:
+                            st.write(f"  - **{item['name']}** {item['quantity']}{item['unit']}")
+                    if not_found:
+                        st.warning("在庫になかった食材（スキップ）:")
+                        for item in not_found:
+                            st.write(f"  ⚠️ {item['name']}")
+                    st.rerun()
+                if col_cancel.button("❌ キャンセル", key="dc_cancel"):
+                    del st.session_state[_DISH_CONFIRM_KEY]
+                    st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 買い物リスト

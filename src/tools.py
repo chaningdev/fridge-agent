@@ -95,18 +95,23 @@ def check_expiring_tool(days: int = 3) -> dict:
     return {"expiring": items, "count": len(items), "days": days}
 
 
-def consume_by_dish_name_tool(dish_name: str) -> dict:
+def consume_by_dish_name_tool(dish_name: str, dry_run: bool = False) -> dict:
     """
     料理名のテキストから標準食材を推定し在庫から消費する。
     例: "カレー"、"肉じゃが"、"親子丼を食べた"
 
+    Args:
+        dry_run: True の場合、在庫を消費せず推定食材リストだけ返す（確認画面用）。
+
     Returns:
-        {"dish": str, "ingredients": [...], "consumed": [...], "not_found": [...]}
+        dry_run=False: {"dish": str, "ingredients": [...], "consumed": [...], "not_found": [...]}
+        dry_run=True:  {"dish": str, "estimated": [...]}
     """
-    # 「〜を食べた」などの表現から料理名だけ取り出す
     import re
     clean = re.sub(r"(を食べた|食べた|を作った|作った|を食べました)$", "", dish_name.strip())
     items = vision.ingredients_from_dish_name(clean)
+    if dry_run:
+        return {"dish": clean, "estimated": items}
     consumed, not_found = [], []
     for item in items:
         ok = db.consume_item(item["name"], float(item.get("quantity", 1)), source="dish_name")
