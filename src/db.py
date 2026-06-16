@@ -7,7 +7,11 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).parent.parent / "fridge.db"
 
-CATEGORIES = ["", "肉・魚", "野菜", "果物", "乳製品", "卵", "穀物", "調味料", "飲み物", "その他"]
+CATEGORIES = ["", "肉・魚", "野菜", "果物", "乳製品", "卵", "穀物", "調味料", "飲み物", "完成品", "その他"]
+
+# 完成品カテゴリ: お菓子・カップ麺・レトルト食品など単体で食べる加工食品
+# 献立提案・消費推定ではこのカテゴリを除外する
+READY_FOOD_CATEGORY = "完成品"
 
 
 @contextmanager

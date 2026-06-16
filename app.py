@@ -111,6 +111,23 @@ elif page == "📦 在庫":
     if not items:
         st.info("在庫がありません。食材を追加してください。")
     else:
+        # ── カテゴリフィルタ ───────────────────────────────────────────────────
+        from src.db import CATEGORIES, READY_FOOD_CATEGORY
+        all_cats = sorted({i.get("category") or "" for i in items})
+        cat_options = ["すべて"] + [c if c else "（未分類）" for c in all_cats]
+        selected_cat = st.selectbox("カテゴリで絞り込み", cat_options, index=0)
+
+        if selected_cat != "すべて":
+            filter_cat = "" if selected_cat == "（未分類）" else selected_cat
+            display_items = [i for i in items if (i.get("category") or "") == filter_cat]
+        else:
+            display_items = items
+
+        # 完成品の件数バッジ
+        ready_count = sum(1 for i in items if i.get("category") == READY_FOOD_CATEGORY)
+        if ready_count:
+            st.info(f"🍫 完成品（お菓子・インスタント等）: {ready_count} 種類 — 献立提案・買い物リストからは除外されます")
+
         st.subheader("在庫一覧")
         # ヘッダー行
         h1, h2, h3, h4, h5 = st.columns([3, 1.5, 1.5, 2, 1])
@@ -118,11 +135,13 @@ elif page == "📦 在庫":
             col.markdown(f"**{label}**")
         st.divider()
 
-        for item in items:
+        for item in display_items:
             c1, c2, c3, c4, c5 = st.columns([3, 1.5, 1.5, 2, 1])
+            cat = item.get("category") or ""
+            cat_label = f"🍫 {cat}" if cat == READY_FOOD_CATEGORY else (cat or "—")
             c1.write(item["name"])
             c2.write(f"{item['quantity']} {item['unit']}")
-            c3.write(item.get("category") or "—")
+            c3.write(cat_label)
             c4.write(_expiry_badge(item.get("expires_at")))
             qty_icon = "🔴" if item["quantity"] <= 1 else "🟡" if item["quantity"] <= 3 else "🟢"
             c5.write(qty_icon)
@@ -161,23 +180,52 @@ elif page == "➕ 追加・消費":
                 st.rerun()
 
     with tab_consume:
-        items = db.get_inventory()
-        if not items:
-            st.info("在庫がありません")
-        else:
-            with st.form("consume_form"):
-                names = [i["name"] for i in items]
-                selected = st.selectbox("食材", names)
-                qty = st.number_input("消費量", min_value=0.1, value=1.0, step=0.5)
-                submitted = st.form_submit_button("消費する", type="primary")
+        sub_tab_manual, sub_tab_dish = st.tabs(["手動で消費", "料理名で消費"])
 
-            if submitted:
-                result = tools.update_inventory_tool(selected, qty, action="consume")
-                if result.get("success"):
-                    st.success(f"✅ **{selected}** {qty} を消費しました")
-                    st.rerun()
+        with sub_tab_manual:
+            items = db.get_inventory()
+            if not items:
+                st.info("在庫がありません")
+            else:
+                with st.form("consume_form"):
+                    names = [i["name"] for i in items]
+                    selected = st.selectbox("食材", names)
+                    qty = st.number_input("消費量", min_value=0.1, value=1.0, step=0.5)
+                    submitted = st.form_submit_button("消費する", type="primary")
+
+                if submitted:
+                    result = tools.update_inventory_tool(selected, qty, action="consume")
+                    if result.get("success"):
+                        st.success(f"✅ **{selected}** {qty} を消費しました")
+                        st.rerun()
+                    else:
+                        st.error("❌ 在庫が見つかりません")
+
+        with sub_tab_dish:
+            st.caption("料理名を入力すると、その料理の標準食材を在庫から自動消費します")
+            dish_input = st.text_input("料理名", placeholder="例: カレー、肉じゃが、親子丼を食べた")
+            if st.button("🍽️ 消費する", type="primary", key="consume_dish"):
+                if not dish_input.strip():
+                    st.error("料理名を入力してください")
                 else:
-                    st.error(f"❌ 在庫が見つかりません")
+                    with st.spinner("Gemini で食材を推定中..."):
+                        try:
+                            result = tools.consume_by_dish_name_tool(dish_input)
+                            st.success(f"**{result['dish']}** の食材を消費しました")
+                            if result["consumed"]:
+                                st.write("消費した食材:")
+                                for item in result["consumed"]:
+                                    st.write(f"  ✅ {item['name']} {item['quantity']}{item['unit']}")
+                            if result["not_found"]:
+                                st.warning("在庫になかった食材（スキップ）:")
+                                for item in result["not_found"]:
+                                    st.write(f"  ⚠️ {item['name']}")
+                        except Exception as e:
+                            err = str(e)
+                            if "503" in err or "UNAVAILABLE" in err:
+                                st.error("⚠️ Gemini が混雑しています。しばらくしてから再試行してください。")
+                            else:
+                                st.error(f"❌ {err}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 買い物リスト
@@ -197,7 +245,18 @@ elif page == "🛒 買い物リスト":
 # 画像読み込み
 # ═══════════════════════════════════════════════════════════════════════════════
 elif page == "📸 画像読み込み":
+    import src.vision as vision
+
     mode = st.radio("モード", ["レシート → 食材追加", "料理写真 → 食材消費"], horizontal=True)
+
+    # session_state keys for dish confirmation flow
+    _SS_INGREDIENTS = "dish_ingredients_pending"
+    _SS_IMAGE_MODE  = "dish_image_mode"
+
+    # Reset pending state when mode switches
+    if st.session_state.get(_SS_IMAGE_MODE) != mode:
+        st.session_state.pop(_SS_INGREDIENTS, None)
+        st.session_state[_SS_IMAGE_MODE] = mode
 
     uploaded = st.file_uploader(
         "画像をアップロード",
@@ -208,14 +267,14 @@ elif page == "📸 画像読み込み":
     if uploaded:
         st.image(uploaded, width=300)
 
-        if st.button("🔍 Gemini で解析する", type="primary"):
-            with st.spinner("Gemini に送信中（混雑時は自動リトライします）..."):
-                try:
-                    with tempfile.NamedTemporaryFile(suffix=Path(uploaded.name).suffix, delete=False) as f:
-                        f.write(uploaded.read())
-                        tmp_path = f.name
-
-                    if "レシート" in mode:
+        # ── レシートモード ─────────────────────────────────────────────────────
+        if "レシート" in mode:
+            if st.button("🔍 Gemini で解析する", type="primary"):
+                with st.spinner("Gemini に送信中（混雑時は自動リトライします）..."):
+                    try:
+                        with tempfile.NamedTemporaryFile(suffix=Path(uploaded.name).suffix, delete=False) as f:
+                            f.write(uploaded.read())
+                            tmp_path = f.name
                         result = tools.parse_receipt_tool(tmp_path)
                         if "error" in result:
                             st.error(result["error"])
@@ -223,24 +282,76 @@ elif page == "📸 画像読み込み":
                             st.success(f"✅ {result['count']} 件の食材を在庫に追加しました")
                             for item in result["added"]:
                                 st.write(f"  - **{item['name']}** {item['quantity']}{item['unit']}")
-                    else:
-                        result = tools.recognize_dish_tool(tmp_path)
-                        if "error" in result:
-                            st.error(result["error"])
+                    except Exception as e:
+                        err = str(e)
+                        if "503" in err or "UNAVAILABLE" in err:
+                            st.error("⚠️ Gemini サーバーが混雑しています。しばらく待ってから再試行してください。")
+                        elif "429" in err:
+                            st.error("⚠️ APIのレート制限に達しました。少し時間をおいてから再試行してください。")
                         else:
-                            st.success(f"✅ {len(result['consumed'])} 種類を消費しました")
-                            for item in result["consumed"]:
-                                st.write(f"  - **{item['name']}** {item['quantity']}{item['unit']}")
-                            if result["not_found"]:
-                                st.warning(f"在庫になかった食材: {[i['name'] for i in result['not_found']]}")
-                except Exception as e:
-                    err = str(e)
-                    if "503" in err or "UNAVAILABLE" in err:
-                        st.error("⚠️ Gemini サーバーが混雑しています。しばらく待ってから再試行してください。")
-                    elif "429" in err:
-                        st.error("⚠️ APIのレート制限に達しました。少し時間をおいてから再試行してください。")
-                    else:
-                        st.error(f"❌ エラーが発生しました: {err}")
+                            st.error(f"❌ エラーが発生しました: {err}")
+
+        # ── 料理写真モード（2ステップ確認フロー） ──────────────────────────────
+        else:
+            # Step 1: Gemini で解析
+            if _SS_INGREDIENTS not in st.session_state:
+                if st.button("🔍 Gemini で解析する", type="primary"):
+                    with st.spinner("Gemini に送信中（混雑時は自動リトライします）..."):
+                        try:
+                            with tempfile.NamedTemporaryFile(suffix=Path(uploaded.name).suffix, delete=False) as f:
+                                f.write(uploaded.read())
+                                tmp_path = f.name
+                            items = vision.recognize_dish(tmp_path)
+                            if not items:
+                                st.warning("食材を認識できませんでした。別の写真を試してください。")
+                            else:
+                                st.session_state[_SS_INGREDIENTS] = items
+                                st.rerun()
+                        except Exception as e:
+                            err = str(e)
+                            if "503" in err or "UNAVAILABLE" in err:
+                                st.error("⚠️ Gemini サーバーが混雑しています。しばらく待ってから再試行してください。")
+                            elif "429" in err:
+                                st.error("⚠️ APIのレート制限に達しました。少し時間をおいてから再試行してください。")
+                            else:
+                                st.error(f"❌ エラーが発生しました: {err}")
+
+            # Step 2: 編集・確認フォーム
+            else:
+                pending = st.session_state[_SS_INGREDIENTS]
+                st.subheader("🍽️ 認識した食材（修正してから確認してください）")
+                st.caption("チェックを外すと消費しません。数量も変更できます。")
+
+                edited = []
+                for i, item in enumerate(pending):
+                    col_chk, col_name, col_qty, col_unit = st.columns([0.5, 3, 1.5, 1.5])
+                    checked = col_chk.checkbox("", value=True, key=f"dish_chk_{i}")
+                    name = col_name.text_input("食材名", value=item["name"], key=f"dish_name_{i}", label_visibility="collapsed")
+                    qty  = col_qty.number_input("数量", value=float(item["quantity"]), min_value=0.0, step=0.5, key=f"dish_qty_{i}", label_visibility="collapsed")
+                    unit = col_unit.text_input("単位", value=item["unit"], key=f"dish_unit_{i}", label_visibility="collapsed")
+                    if checked and name.strip():
+                        edited.append({"name": name.strip(), "quantity": qty, "unit": unit})
+
+                st.divider()
+                col_ok, col_cancel = st.columns([1, 1])
+                if col_ok.button("✅ 確認して在庫から消費", type="primary"):
+                    consumed, not_found = [], []
+                    for item in edited:
+                        ok = db.consume_item(item["name"], item["quantity"], source="dish")
+                        (consumed if ok else not_found).append(item)
+                    del st.session_state[_SS_INGREDIENTS]
+                    if consumed:
+                        st.success(f"✅ {len(consumed)} 種類を消費しました")
+                        for item in consumed:
+                            st.write(f"  - **{item['name']}** {item['quantity']}{item['unit']}")
+                    if not_found:
+                        st.warning("在庫になかった食材（スキップ）:")
+                        for item in not_found:
+                            st.write(f"  ⚠️ {item['name']}")
+                    st.rerun()
+                if col_cancel.button("❌ キャンセル"):
+                    del st.session_state[_SS_INGREDIENTS]
+                    st.rerun()
     else:
         st.info("画像をアップロードすると Gemini が自動で食材を認識します")
 
