@@ -24,14 +24,16 @@ def parse_receipt_tool(image_path: str) -> dict:
         return {"error": f"File not found: {image_path}"}
 
     items = vision.parse_receipt(image_path)
+    added = []
     for item in items:
-        db.upsert_item(
+        stored_expiry = db.upsert_item(
             name=item["name"],
             quantity=float(item.get("quantity", 1)),
             unit=item.get("unit", "個"),
             source="receipt",
         )
-    return {"added": items, "count": len(items)}
+        added.append({**item, "expires_at": stored_expiry})
+    return {"added": added, "count": len(added)}
 
 
 def recognize_dish_tool(image_path: str) -> dict:
@@ -79,10 +81,10 @@ def update_inventory_tool(
         expires_at: 賞味期限（YYYY-MM-DD 形式、省略可）
     """
     if action == "add":
-        db.upsert_item(name, quantity, unit, source="manual",
-                       category=category, expires_at=expires_at)
+        stored_expiry = db.upsert_item(name, quantity, unit, source="manual",
+                                       category=category, expires_at=expires_at)
         return {"action": "add", "name": name, "quantity": quantity,
-                "unit": unit, "category": category, "expires_at": expires_at}
+                "unit": unit, "category": category, "expires_at": stored_expiry}
     elif action == "consume":
         ok = db.consume_item(name, quantity, source="manual")
         return {"action": "consume", "name": name, "success": ok}

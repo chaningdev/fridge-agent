@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from .expiry_master import get_default_expiry
+
 DB_PATH = Path(__file__).parent.parent / "fridge.db"
 
 CATEGORIES = ["", "肉・魚", "野菜", "果物", "乳製品", "卵", "穀物", "調味料", "飲み物", "完成品", "その他"]
@@ -65,24 +67,41 @@ def upsert_item(
     source: str = "manual",
     category: str = "",
     expires_at: str | None = None,
-) -> None:
-    """Add quantity to an existing item or insert a new one."""
+) -> str | None:
+    """Add quantity to an existing item or insert a new one.
+
+    Returns the expires_at value that was actually stored
+    (either the provided value or the auto-filled default).
+    """
+    user_provided_expiry = expires_at is not None
+    if not user_provided_expiry:
+        expires_at = get_default_expiry(name)
+
     now = datetime.now().isoformat()
     with _conn() as con:
-        con.execute("""
+        # expires_at の更新ポリシー:
+        #   ユーザーが明示的に指定した場合 → 常に上書き
+        #   自動補完 or None の場合       → DB に既に値があれば保持（再入荷時に上書きしない）
+        if user_provided_expiry:
+            expiry_sql = "excluded.expires_at"
+        else:
+            expiry_sql = "CASE WHEN expires_at IS NULL THEN excluded.expires_at ELSE expires_at END"
+
+        con.execute(f"""
             INSERT INTO inventory (name, quantity, unit, category, expires_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 quantity   = quantity + excluded.quantity,
                 unit       = excluded.unit,
                 category   = CASE WHEN excluded.category != '' THEN excluded.category ELSE category END,
-                expires_at = CASE WHEN excluded.expires_at IS NOT NULL THEN excluded.expires_at ELSE expires_at END,
+                expires_at = {expiry_sql},
                 updated_at = excluded.updated_at
         """, (name, quantity, unit, category, expires_at, now))
         con.execute("""
             INSERT INTO history (action, item_name, quantity, unit, source, created_at)
             VALUES ('add', ?, ?, ?, ?, ?)
         """, (name, quantity, unit, source, now))
+    return expires_at
 
 
 def consume_item(name: str, quantity: float, source: str = "manual") -> bool:

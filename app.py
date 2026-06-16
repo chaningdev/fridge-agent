@@ -108,7 +108,9 @@ if _SB_RECEIPT_KEY in st.session_state:
     st.sidebar.success(f"✅ レシート: {r['count']} 件を在庫に追加")
     with st.sidebar.expander("追加した食材"):
         for item in r["added"]:
-            st.write(f"- {item['name']} {item['quantity']}{item['unit']}")
+            exp = item.get("expires_at")
+            exp_str = f"（期限: {exp}）" if exp else ""
+            st.write(f"- {item['name']} {item['quantity']}{item['unit']} {exp_str}")
     if st.sidebar.button("クリア", key="sb_clear_receipt"):
         del st.session_state[_SB_RECEIPT_KEY]
         st.rerun()
@@ -370,27 +372,43 @@ elif page == "➕ 追加・消費":
     tab_add, tab_consume = st.tabs(["食材を追加", "食材を消費"])
 
     with tab_add:
+        from src.db import CATEGORIES
+        from src.expiry_master import get_default_expiry, get_default_days
+
+        # フォーム外で食材名を先取りして自動補完プレビューを表示する
+        name_preview = st.text_input("食材名", placeholder="例: 卵", key="add_name_preview")
+        if name_preview.strip():
+            preview_expiry = get_default_expiry(name_preview.strip())
+            preview_days   = get_default_days(name_preview.strip())
+            if preview_expiry:
+                st.caption(f"📅 標準賞味期限: **{preview_expiry}**（今日から {preview_days} 日）— 手動で変更することもできます")
+            else:
+                st.caption("📅 標準賞味期限データなし — 手動で設定するか空欄のままにしてください")
+
         with st.form("add_form"):
-            name = st.text_input("食材名", placeholder="例: 卵")
             col1, col2 = st.columns(2)
             qty  = col1.number_input("数量", min_value=0.1, value=1.0, step=0.5)
             unit = col2.selectbox("単位", ["個", "玉", "束", "本", "枚", "丁", "袋", "缶", "パック", "g", "ml", "L", "合", "切れ"])
             col3, col4 = st.columns(2)
-            from src.db import CATEGORIES
             category = col3.selectbox("カテゴリ", CATEGORIES)
-            expires = col4.date_input("賞味期限（任意）", value=None)
+            expires  = col4.date_input("賞味期限（空欄＝自動補完）", value=None)
             submitted = st.form_submit_button("追加する", type="primary")
 
         if submitted:
-            if not name.strip():
+            name = st.session_state.get("add_name_preview", "").strip()
+            if not name:
                 st.error("食材名を入力してください")
             else:
                 expires_str = expires.isoformat() if expires else None
-                tools.update_inventory_tool(
-                    name.strip(), qty, unit, action="add",
+                result = tools.update_inventory_tool(
+                    name, qty, unit, action="add",
                     category=category, expires_at=expires_str,
                 )
-                st.success(f"✅ **{name}** {qty}{unit} を追加しました")
+                stored = result.get("expires_at")
+                if stored and not expires_str:
+                    st.success(f"✅ **{name}** {qty}{unit} を追加しました（賞味期限を自動設定: {stored}）")
+                else:
+                    st.success(f"✅ **{name}** {qty}{unit} を追加しました")
                 st.rerun()
 
     with tab_consume:
