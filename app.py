@@ -62,27 +62,65 @@ if page == "🤖 エージェント":
 # 在庫ページ
 # ═══════════════════════════════════════════════════════════════════════════════
 elif page == "📦 在庫":
+    from datetime import date as _date
+
     result = tools.check_inventory_tool()
     items = result["inventory"]
+    expiring = db.get_expiring_items(days=3)
 
-    col1, col2 = st.columns(2)
+    # ── メトリクス ──────────────────────────────────────────────────────────────
+    col1, col2, col3 = st.columns(3)
     col1.metric("食材の種類", result["count"])
     low = [i for i in items if i["quantity"] <= 1]
     col2.metric("残量少ない食材", len(low), delta_color="inverse")
+    col3.metric("期限切れ間近", len(expiring), delta_color="inverse")
+
+    # ── 期限切れアラート ────────────────────────────────────────────────────────
+    if expiring:
+        today = _date.today().isoformat()
+        expired  = [i for i in expiring if i["expires_at"] < today]
+        soon     = [i for i in expiring if i["expires_at"] >= today]
+        if expired:
+            names = "、".join(i["name"] for i in expired)
+            st.error(f"🚨 期限切れ: **{names}**")
+        if soon:
+            names = "、".join(f"{i['name']}（{i['expires_at']}）" for i in soon)
+            st.warning(f"⚠️ 期限切れ間近（3日以内）: **{names}**")
 
     st.divider()
+
+    # ── 在庫一覧 ───────────────────────────────────────────────────────────────
+    def _expiry_badge(exp: str | None) -> str:
+        if not exp:
+            return ""
+        today = _date.today().isoformat()
+        days_left = (_date.fromisoformat(exp) - _date.today()).days
+        if days_left < 0:
+            return f"🔴 期限切れ（{exp}）"
+        if days_left <= 3:
+            return f"🟠 あと{days_left}日（{exp}）"
+        if days_left <= 7:
+            return f"🟡 あと{days_left}日（{exp}）"
+        return f"🟢 {exp}"
 
     if not items:
         st.info("在庫がありません。食材を追加してください。")
     else:
-        # 残量ゲージ付きテーブル
         st.subheader("在庫一覧")
+        # ヘッダー行
+        h1, h2, h3, h4, h5 = st.columns([3, 1.5, 1.5, 2, 1])
+        for col, label in zip([h1,h2,h3,h4,h5], ["食材名","数量","カテゴリ","賞味期限","残量"]):
+            col.markdown(f"**{label}**")
+        st.divider()
+
         for item in items:
-            c1, c2, c3 = st.columns([3, 2, 1])
+            c1, c2, c3, c4, c5 = st.columns([3, 1.5, 1.5, 2, 1])
             c1.write(item["name"])
             c2.write(f"{item['quantity']} {item['unit']}")
-            color = "🔴" if item["quantity"] <= 1 else "🟡" if item["quantity"] <= 3 else "🟢"
-            c3.write(color)
+            c3.write(item.get("category") or "—")
+            c4.write(_expiry_badge(item.get("expires_at")))
+            qty_icon = "🔴" if item["quantity"] <= 1 else "🟡" if item["quantity"] <= 3 else "🟢"
+            c5.write(qty_icon)
 
     if st.button("🔄 更新"):
         st.rerun()
@@ -99,13 +137,21 @@ elif page == "➕ 追加・消費":
             col1, col2 = st.columns(2)
             qty  = col1.number_input("数量", min_value=0.1, value=1.0, step=0.5)
             unit = col2.selectbox("単位", ["個", "g", "ml", "本", "枚", "丁", "袋", "L", "合", "切れ"])
+            col3, col4 = st.columns(2)
+            from src.db import CATEGORIES
+            category = col3.selectbox("カテゴリ", CATEGORIES)
+            expires = col4.date_input("賞味期限（任意）", value=None)
             submitted = st.form_submit_button("追加する", type="primary")
 
         if submitted:
             if not name.strip():
                 st.error("食材名を入力してください")
             else:
-                tools.update_inventory_tool(name.strip(), qty, unit, action="add")
+                expires_str = expires.isoformat() if expires else None
+                tools.update_inventory_tool(
+                    name.strip(), qty, unit, action="add",
+                    category=category, expires_at=expires_str,
+                )
                 st.success(f"✅ **{name}** {qty}{unit} を追加しました")
                 st.rerun()
 

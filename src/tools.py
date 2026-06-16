@@ -59,7 +59,14 @@ def recognize_dish_tool(image_path: str) -> dict:
     return {"consumed": consumed, "not_found": not_found}
 
 
-def update_inventory_tool(name: str, quantity: float, unit: str = "", action: str = "add") -> dict:
+def update_inventory_tool(
+    name: str,
+    quantity: float,
+    unit: str = "",
+    action: str = "add",
+    category: str = "",
+    expires_at: str | None = None,
+) -> dict:
     """
     在庫を手動で追加または消費する。
 
@@ -68,14 +75,24 @@ def update_inventory_tool(name: str, quantity: float, unit: str = "", action: st
         quantity: 数量
         unit: 単位
         action: "add" | "consume"
+        category: カテゴリ（肉・魚 / 野菜 / 果物 / 乳製品 / 卵 / 穀物 / 調味料 / 飲み物 / その他）
+        expires_at: 賞味期限（YYYY-MM-DD 形式、省略可）
     """
     if action == "add":
-        db.upsert_item(name, quantity, unit, source="manual")
-        return {"action": "add", "name": name, "quantity": quantity, "unit": unit}
+        db.upsert_item(name, quantity, unit, source="manual",
+                       category=category, expires_at=expires_at)
+        return {"action": "add", "name": name, "quantity": quantity,
+                "unit": unit, "category": category, "expires_at": expires_at}
     elif action == "consume":
         ok = db.consume_item(name, quantity, source="manual")
         return {"action": "consume", "name": name, "success": ok}
     return {"error": f"Unknown action: {action}"}
+
+
+def check_expiring_tool(days: int = 3) -> dict:
+    """期限切れ間近の食材一覧を返す。"""
+    items = db.get_expiring_items(days=days)
+    return {"expiring": items, "count": len(items), "days": days}
 
 
 def check_inventory_tool() -> dict:

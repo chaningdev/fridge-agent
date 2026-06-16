@@ -51,3 +51,50 @@ def test_history_recorded():
     actions = [h["action"] for h in history]
     assert "add" in actions
     assert "consume" in actions
+
+
+# ── 賞味期限・カテゴリ ────────────────────────────────────────────────────────
+
+def test_upsert_with_category_and_expiry():
+    db.upsert_item("牛乳", 1, "L", category="乳製品", expires_at="2026-06-20")
+    items = {i["name"]: i for i in db.get_inventory()}
+    assert items["牛乳"]["category"] == "乳製品"
+    assert items["牛乳"]["expires_at"] == "2026-06-20"
+
+
+def test_category_not_overwritten_on_restock():
+    db.upsert_item("卵", 6, "個", category="卵", expires_at="2026-06-25")
+    db.upsert_item("卵", 6, "個")  # category/expires_at 省略で再入荷
+    items = {i["name"]: i for i in db.get_inventory()}
+    assert items["卵"]["category"] == "卵"        # 上書きされない
+    assert items["卵"]["expires_at"] == "2026-06-25"
+
+
+def test_get_expiring_items():
+    from datetime import date, timedelta
+    soon = (date.today() + timedelta(days=2)).isoformat()
+    far  = (date.today() + timedelta(days=30)).isoformat()
+    db.upsert_item("ヨーグルト", 1, "個", expires_at=soon)
+    db.upsert_item("チーズ",     1, "個", expires_at=far)
+    expiring = db.get_expiring_items(days=3)
+    names = [i["name"] for i in expiring]
+    assert "ヨーグルト" in names
+    assert "チーズ" not in names
+
+
+def test_get_expiring_includes_expired():
+    from datetime import date, timedelta
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    db.upsert_item("期限切れ品", 1, "個", expires_at=yesterday)
+    expiring = db.get_expiring_items(days=0)
+    names = [i["name"] for i in expiring]
+    assert "期限切れ品" in names
+
+
+def test_inventory_sorted_by_expiry_first():
+    from datetime import date, timedelta
+    db.upsert_item("A食材", 1, "個", expires_at=(date.today() + timedelta(days=1)).isoformat())
+    db.upsert_item("Z食材", 1, "個")  # 期限なし
+    items = db.get_inventory()
+    names = [i["name"] for i in items]
+    assert names.index("A食材") < names.index("Z食材")  # 期限あり食材が先頭

@@ -2,10 +2,12 @@
 
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent.parent / "fridge.db"
+
+CATEGORIES = ["", "肉・魚", "野菜", "果物", "乳製品", "卵", "穀物", "調味料", "飲み物", "その他"]
 
 
 @contextmanager
@@ -20,41 +22,59 @@ def _conn():
 
 
 def init_db() -> None:
-    """Create tables if they do not yet exist."""
+    """Create tables and run column migrations."""
     with _conn() as con:
         con.executescript("""
             CREATE TABLE IF NOT EXISTS inventory (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                name      TEXT    NOT NULL UNIQUE,
-                quantity  REAL    NOT NULL DEFAULT 0,
-                unit      TEXT    NOT NULL DEFAULT '',
-                updated_at TEXT   NOT NULL
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT    NOT NULL UNIQUE,
+                quantity    REAL    NOT NULL DEFAULT 0,
+                unit        TEXT    NOT NULL DEFAULT '',
+                updated_at  TEXT    NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS history (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                action     TEXT    NOT NULL,  -- 'add' | 'consume'
-                item_name  TEXT    NOT NULL,
-                quantity   REAL    NOT NULL,
-                unit       TEXT    NOT NULL DEFAULT '',
-                source     TEXT,              -- 'receipt' | 'dish' | 'manual'
-                created_at TEXT    NOT NULL
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                action      TEXT    NOT NULL,
+                item_name   TEXT    NOT NULL,
+                quantity    REAL    NOT NULL,
+                unit        TEXT    NOT NULL DEFAULT '',
+                source      TEXT,
+                created_at  TEXT    NOT NULL
             );
         """)
+        # マイグレーション: 既存DBに新カラムを追加（すでにあればスキップ）
+        for ddl in [
+            "ALTER TABLE inventory ADD COLUMN category   TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE inventory ADD COLUMN expires_at TEXT",
+        ]:
+            try:
+                con.execute(ddl)
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
 
-def upsert_item(name: str, quantity: float, unit: str = "", source: str = "manual") -> None:
+def upsert_item(
+    name: str,
+    quantity: float,
+    unit: str = "",
+    source: str = "manual",
+    category: str = "",
+    expires_at: str | None = None,
+) -> None:
     """Add quantity to an existing item or insert a new one."""
     now = datetime.now().isoformat()
     with _conn() as con:
         con.execute("""
-            INSERT INTO inventory (name, quantity, unit, updated_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO inventory (name, quantity, unit, category, expires_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 quantity   = quantity + excluded.quantity,
                 unit       = excluded.unit,
+                category   = CASE WHEN excluded.category != '' THEN excluded.category ELSE category END,
+                expires_at = CASE WHEN excluded.expires_at IS NOT NULL THEN excluded.expires_at ELSE expires_at END,
                 updated_at = excluded.updated_at
-        """, (name, quantity, unit, now))
+        """, (name, quantity, unit, category, expires_at, now))
         con.execute("""
             INSERT INTO history (action, item_name, quantity, unit, source, created_at)
             VALUES ('add', ?, ?, ?, ?, ?)
@@ -83,11 +103,30 @@ def consume_item(name: str, quantity: float, source: str = "manual") -> bool:
 
 
 def get_inventory() -> list[dict]:
-    """Return all items with quantity > 0."""
+    """Return all items with quantity > 0, ordered by expiry then name."""
     with _conn() as con:
-        rows = con.execute(
-            "SELECT name, quantity, unit, updated_at FROM inventory WHERE quantity > 0 ORDER BY name"
-        ).fetchall()
+        rows = con.execute("""
+            SELECT name, quantity, unit, category, expires_at, updated_at
+            FROM inventory
+            WHERE quantity > 0
+            ORDER BY
+                CASE WHEN expires_at IS NULL THEN 1 ELSE 0 END,
+                expires_at,
+                name
+        """).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_expiring_items(days: int = 3) -> list[dict]:
+    """Return items expiring within `days` days (including already expired)."""
+    threshold = (date.today() + timedelta(days=days)).isoformat()
+    with _conn() as con:
+        rows = con.execute("""
+            SELECT name, quantity, unit, category, expires_at
+            FROM inventory
+            WHERE expires_at IS NOT NULL AND expires_at <= ? AND quantity > 0
+            ORDER BY expires_at
+        """, (threshold,)).fetchall()
     return [dict(r) for r in rows]
 
 
