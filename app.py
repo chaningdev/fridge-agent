@@ -67,14 +67,12 @@ page = st.sidebar.radio(
     ["🤖 エージェント", "📦 在庫", "➕ 追加・消費", "🛒 買い物リスト", "🍽️ 献立提案", "📋 履歴"],
 )
 
-# ── サイドバー: 画像アップロード（常時表示・自動判別） ────────────────────────
-st.sidebar.divider()
-st.sidebar.markdown("#### 📸 画像アップロード")
-st.sidebar.caption("レシート・料理写真を自動判別して処理します")
-
-_SB_DISH_KEY     = "sb_dish_pending"
-_SB_RECEIPT_KEY  = "sb_receipt_result"
-_DISH_CONFIRM_KEY = "dish_name_confirm_pending"  # テキスト入力 / エージェントの消費確認
+# ── 定数・ユーティリティ ──────────────────────────────────────────────────────
+_SB_DISH_KEY      = "sb_dish_pending"
+_SB_RECEIPT_KEY   = "sb_receipt_result"
+_DISH_CONFIRM_KEY = "dish_name_confirm_pending"   # 追加・消費タブ用
+_CHAT_MESSAGES    = "chat_messages"               # エージェントチャット履歴
+_CHAT_DISH_KEY    = "chat_dish_pending"           # チャット内料理写真確認待ち
 
 import re as _re
 _CONSUME_RE = _re.compile(r"(食べた|食べました|を食べ|食った|作った|作りました)")
@@ -85,149 +83,96 @@ def _detect_dish_consume(goal: str) -> str | None:
         return _re.sub(r"(を食べた|食べた|を食べました|食べました|を食べ|食った|を作った|作った|作りました).*$", "", goal).strip() or None
     return None
 
-sb_file = st.sidebar.file_uploader(
-    "画像を選択",
-    type=["jpg", "jpeg", "png", "webp"],
-    key="sb_image_uploader",
-    label_visibility="collapsed",
-)
+def _gemini_error_msg(e: Exception) -> str:
+    err = str(e)
+    if "503" in err or "UNAVAILABLE" in err:
+        return "⚠️ Gemini が混雑しています。しばらく待ってから再試行してください。"
+    if "429" in err:
+        return "⚠️ API のレート制限に達しました。少し時間をおいてから再試行してください。"
+    return f"❌ エラー: {err}"
 
-# ファイルが切り替わったら前の結果をリセット
-if sb_file:
-    if st.session_state.get("_sb_last_name") != sb_file.name:
-        st.session_state["_sb_last_name"] = sb_file.name
-        st.session_state.pop(_SB_DISH_KEY, None)
-        st.session_state.pop(_SB_RECEIPT_KEY, None)
-    st.sidebar.image(sb_file, width=200)
+# ── サイドバー: 画像アップロード（エージェントページ以外で表示） ──────────────
+if page != "🤖 エージェント":
+    st.sidebar.divider()
+    st.sidebar.markdown("#### 📸 画像アップロード")
+    st.sidebar.caption("レシート・料理写真を自動判別して処理します")
 
-sb_analyze = sb_file and st.sidebar.button("🔍 自動判別して処理", type="primary", key="sb_analyze")
+    sb_file = st.sidebar.file_uploader(
+        "画像を選択",
+        type=["jpg", "jpeg", "png", "webp"],
+        key="sb_image_uploader",
+        label_visibility="collapsed",
+    )
 
-# レシート結果のインライン表示（サイドバー）
-if _SB_RECEIPT_KEY in st.session_state:
-    r = st.session_state[_SB_RECEIPT_KEY]
-    st.sidebar.success(f"✅ レシート: {r['count']} 件を在庫に追加")
-    with st.sidebar.expander("追加した食材"):
-        for item in r["added"]:
-            exp = item.get("expires_at")
-            exp_str = f"（期限: {exp}）" if exp else ""
-            st.write(f"- {item['name']} {item['quantity']}{item['unit']} {exp_str}")
-    if st.sidebar.button("クリア", key="sb_clear_receipt"):
-        del st.session_state[_SB_RECEIPT_KEY]
-        st.rerun()
+    if sb_file:
+        if st.session_state.get("_sb_last_name") != sb_file.name:
+            st.session_state["_sb_last_name"] = sb_file.name
+            st.session_state.pop(_SB_DISH_KEY, None)
+            st.session_state.pop(_SB_RECEIPT_KEY, None)
+        st.sidebar.image(sb_file, width=200)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# サイドバー画像: 解析処理（ボタン押下時）
-# ═══════════════════════════════════════════════════════════════════════════════
-if sb_analyze:
-    with st.spinner("Gemini で自動判別・解析中..."):
-        suffix = Path(sb_file.name).suffix or ".jpg"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
-            f.write(sb_file.read())
-            tmp_path = f.name
-        try:
-            img_type = vision.detect_image_type(tmp_path)
-            if img_type == "receipt":
-                result = tools.parse_receipt_tool(tmp_path)
-                if "error" in result:
-                    st.error(result["error"])
+    sb_analyze = sb_file and st.sidebar.button("🔍 自動判別して処理", type="primary", key="sb_analyze")
+
+    if _SB_RECEIPT_KEY in st.session_state:
+        r = st.session_state[_SB_RECEIPT_KEY]
+        st.sidebar.success(f"✅ レシート: {r['count']} 件を在庫に追加")
+        with st.sidebar.expander("追加した食材"):
+            for item in r["added"]:
+                exp = item.get("expires_at")
+                exp_str = f"（期限: {exp}）" if exp else ""
+                st.write(f"- {item['name']} {item['quantity']}{item['unit']} {exp_str}")
+        if st.sidebar.button("クリア", key="sb_clear_receipt"):
+            del st.session_state[_SB_RECEIPT_KEY]
+            st.rerun()
+
+    if sb_file and sb_analyze:
+        with st.spinner("Gemini で自動判別・解析中..."):
+            suffix = Path(sb_file.name).suffix or ".jpg"
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+                f.write(sb_file.read())
+                tmp_path = f.name
+            try:
+                img_type = vision.detect_image_type(tmp_path)
+                if img_type == "receipt":
+                    result = tools.parse_receipt_tool(tmp_path)
+                    if "error" in result:
+                        st.error(result["error"])
+                    else:
+                        st.session_state[_SB_RECEIPT_KEY] = result
+                        st.session_state.pop(_SB_DISH_KEY, None)
+                        st.rerun()
                 else:
-                    st.session_state[_SB_RECEIPT_KEY] = result
-                    st.session_state.pop(_SB_DISH_KEY, None)
-                    st.rerun()
-            else:
-                items = vision.recognize_dish(tmp_path)
-                if not items:
-                    st.warning("食材を認識できませんでした。別の写真を試してください。")
-                else:
-                    st.session_state[_SB_DISH_KEY] = items
-                    st.session_state.pop(_SB_RECEIPT_KEY, None)
-                    st.rerun()
-        except Exception as e:
-            err = str(e)
-            if "503" in err or "UNAVAILABLE" in err:
-                st.error("⚠️ Gemini が混雑しています。しばらく待ってから再試行してください。")
-            elif "429" in err:
-                st.error("⚠️ APIのレート制限に達しました。少し時間をおいてから再試行してください。")
-            else:
-                st.error(f"❌ エラー: {err}")
+                    items = vision.recognize_dish(tmp_path)
+                    if not items:
+                        st.warning("食材を認識できませんでした。別の写真を試してください。")
+                    else:
+                        st.session_state[_SB_DISH_KEY] = items
+                        st.session_state.pop(_SB_RECEIPT_KEY, None)
+                        st.rerun()
+            except Exception as e:
+                st.error(_gemini_error_msg(e))
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 料理写真の食材確認フォーム（サイドバーアップロード → メイン画面で確認）
-# ═══════════════════════════════════════════════════════════════════════════════
-if _SB_DISH_KEY in st.session_state:
-    pending = st.session_state[_SB_DISH_KEY]
-    st.subheader("🍽️ 料理写真の食材確認")
-    st.caption("チェックを外すと消費しません。食材名・数量も修正できます。")
-
-    edited = []
-    for i, item in enumerate(pending):
-        col_chk, col_name, col_qty, col_unit = st.columns([0.5, 3, 1.5, 1.5])
-        checked = col_chk.checkbox("", value=True, key=f"sb_chk_{i}")
-        name = col_name.text_input(
-            "食材名", value=item["name"], key=f"sb_name_{i}", label_visibility="collapsed"
-        )
-        qty  = col_qty.number_input("数量", value=float(item["quantity"]), min_value=0.0, step=0.5, key=f"sb_qty_{i}", label_visibility="collapsed")
-        unit = col_unit.text_input("単位", value=item["unit"], key=f"sb_unit_{i}", label_visibility="collapsed")
-        if checked and name.strip():
-            edited.append({"name": name.strip(), "quantity": qty, "unit": unit})
-
-    st.divider()
-    col_ok, col_cancel = st.columns([1, 1])
-    if col_ok.button("✅ 確認して在庫から消費", type="primary", key="sb_dish_ok"):
-        consumed, not_found = [], []
-        for item in edited:
-            ok = db.consume_item(item["name"], item["quantity"], source="dish")
-            (consumed if ok else not_found).append(item)
-        del st.session_state[_SB_DISH_KEY]
-        if consumed:
-            st.success(f"✅ {len(consumed)} 種類を消費しました")
-            for item in consumed:
-                st.write(f"  - **{item['name']}** {item['quantity']}{item['unit']}")
-        if not_found:
-            st.warning("在庫になかった食材（スキップ）:")
-            for item in not_found:
-                st.write(f"  ⚠️ {item['name']}")
-        st.rerun()
-    if col_cancel.button("❌ キャンセル", key="sb_dish_cancel"):
-        del st.session_state[_SB_DISH_KEY]
-        st.rerun()
-    st.stop()  # 確認フォーム表示中はページルーティングをスキップ
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# AIエージェントページ — 自然文の目標から自律的にToolを呼び出す
-# ═══════════════════════════════════════════════════════════════════════════════
-if page == "🤖 エージェント":
-    st.subheader("AIエージェントに目標を伝える")
-    has_key = bool(os.environ.get("OPENAI_API_KEY"))
-    if has_key:
-        st.caption("GPT が目標を解釈し、必要なToolを自律的に呼び出します。")
-    else:
-        st.caption("⚠️ OPENAI_API_KEY 未設定のため、キーワードによるルールベースで動作します。")
-
-    # ── 料理消費の確認フォーム ────────────────────────────────────────────────────
-    if _DISH_CONFIRM_KEY in st.session_state:
-        pending = st.session_state[_DISH_CONFIRM_KEY]
-        st.subheader(f"🍽️ **{pending['dish']}** の推定食材（確認してから消費）")
+    if _SB_DISH_KEY in st.session_state:
+        pending = st.session_state[_SB_DISH_KEY]
+        st.subheader("🍽️ 料理写真の食材確認")
         st.caption("チェックを外すと消費しません。食材名・数量も修正できます。")
-
         edited = []
-        for i, item in enumerate(pending["items"]):
+        for i, item in enumerate(pending):
             col_chk, col_name, col_qty, col_unit = st.columns([0.5, 3, 1.5, 1.5])
-            checked = col_chk.checkbox("", value=True, key=f"ag_chk_{i}")
-            name    = col_name.text_input("食材名", value=item["name"], key=f"ag_name_{i}", label_visibility="collapsed")
-            qty     = col_qty.number_input("数量", value=float(item["quantity"]), min_value=0.0, step=0.5, key=f"ag_qty_{i}", label_visibility="collapsed")
-            unit    = col_unit.text_input("単位", value=item["unit"], key=f"ag_unit_{i}", label_visibility="collapsed")
+            checked = col_chk.checkbox("", value=True, key=f"sb_chk_{i}")
+            name = col_name.text_input("食材名", value=item["name"], key=f"sb_name_{i}", label_visibility="collapsed")
+            qty  = col_qty.number_input("数量", value=float(item["quantity"]), min_value=0.0, step=0.5, key=f"sb_qty_{i}", label_visibility="collapsed")
+            unit = col_unit.text_input("単位", value=item["unit"], key=f"sb_unit_{i}", label_visibility="collapsed")
             if checked and name.strip():
                 edited.append({"name": name.strip(), "quantity": qty, "unit": unit})
-
         st.divider()
         col_ok, col_cancel = st.columns([1, 1])
-        if col_ok.button("✅ 確認して在庫から消費", type="primary", key="ag_dish_ok"):
+        if col_ok.button("✅ 確認して在庫から消費", type="primary", key="sb_dish_ok"):
             consumed, not_found = [], []
             for item in edited:
-                ok = db.consume_item(item["name"], item["quantity"], source="dish_name")
+                ok = db.consume_item(item["name"], item["quantity"], source="dish")
                 (consumed if ok else not_found).append(item)
-            del st.session_state[_DISH_CONFIRM_KEY]
+            del st.session_state[_SB_DISH_KEY]
             if consumed:
                 st.success(f"✅ {len(consumed)} 種類を消費しました")
                 for item in consumed:
@@ -237,47 +182,151 @@ if page == "🤖 エージェント":
                 for item in not_found:
                     st.write(f"  ⚠️ {item['name']}")
             st.rerun()
-        if col_cancel.button("❌ キャンセル", key="ag_dish_cancel"):
-            del st.session_state[_DISH_CONFIRM_KEY]
+        if col_cancel.button("❌ キャンセル", key="sb_dish_cancel"):
+            del st.session_state[_SB_DISH_KEY]
             st.rerun()
+        st.stop()
 
-    # ── 通常のエージェント入力 ────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# AIエージェントページ — チャット UI（テキスト＋画像を同時送信）
+# ═══════════════════════════════════════════════════════════════════════════════
+if page == "🤖 エージェント":
+    has_key = bool(os.environ.get("OPENAI_API_KEY"))
+    mode_label = "GPT 自律呼び出し" if has_key else "ルールベース（OPENAI_API_KEY 未設定）"
+    st.caption(f"テキストメッセージに画像を添付して送ることもできます　・　モード: {mode_label}")
+
+    # チャット履歴を初期化
+    if _CHAT_MESSAGES not in st.session_state:
+        st.session_state[_CHAT_MESSAGES] = []
+
+    # ── 過去のチャット履歴を表示 ──────────────────────────────────────────────
+    for msg in st.session_state[_CHAT_MESSAGES]:
+        with st.chat_message(msg["role"]):
+            if msg.get("image_bytes"):
+                st.image(msg["image_bytes"], width=220)
+            st.markdown(msg["content"])
+
+    # ── 料理写真の食材確認フォーム（チャット内インライン） ────────────────────
+    if _CHAT_DISH_KEY in st.session_state:
+        pending = st.session_state[_CHAT_DISH_KEY]
+        with st.chat_message("assistant"):
+            st.markdown(f"🍽️ **{pending['dish']}** の推定食材を確認してください")
+            st.caption("チェックを外すと消費しません。食材名・数量も修正できます。")
+            edited = []
+            for i, item in enumerate(pending["items"]):
+                col_chk, col_name, col_qty, col_unit = st.columns([0.5, 3, 1.5, 1.5])
+                checked  = col_chk.checkbox("", value=True, key=f"cd_chk_{i}")
+                name     = col_name.text_input("", value=item["name"],            key=f"cd_name_{i}", label_visibility="collapsed")
+                qty      = col_qty.number_input("", value=float(item["quantity"]), min_value=0.0, step=0.5, key=f"cd_qty_{i}", label_visibility="collapsed")
+                unit     = col_unit.text_input("", value=item["unit"],            key=f"cd_unit_{i}", label_visibility="collapsed")
+                if checked and name.strip():
+                    edited.append({"name": name.strip(), "quantity": qty, "unit": unit})
+            col_ok, col_cancel = st.columns([1, 1])
+            if col_ok.button("✅ 消費する", type="primary", key="cd_ok"):
+                consumed, not_found = [], []
+                for item in edited:
+                    ok = db.consume_item(item["name"], item["quantity"], source="dish")
+                    (consumed if ok else not_found).append(item)
+                del st.session_state[_CHAT_DISH_KEY]
+                lines = [f"- **{i['name']}** {i['quantity']}{i['unit']}" for i in consumed]
+                reply = f"✅ {len(consumed)} 種類を消費しました\n" + "\n".join(lines)
+                if not_found:
+                    reply += "\n\n⚠️ 在庫になかった食材（スキップ）: " + "、".join(i["name"] for i in not_found)
+                st.session_state[_CHAT_MESSAGES].append({"role": "assistant", "content": reply})
+                st.rerun()
+            if col_cancel.button("❌ キャンセル", key="cd_cancel"):
+                del st.session_state[_CHAT_DISH_KEY]
+                st.session_state[_CHAT_MESSAGES].append({"role": "assistant", "content": "キャンセルしました。"})
+                st.rerun()
+
+    # ── チャット入力（テキスト＋画像添付） ────────────────────────────────────
     else:
-        examples = "例: 「在庫を確認して」「トマトを3個追加して」「足りないものを教えて」「献立を提案して」"
-        goal = st.text_input("目標", placeholder=examples)
+        prompt = st.chat_input(
+            "メッセージを入力（📎 で画像を添付できます）",
+            accept_file=True,
+            file_type=["jpg", "jpeg", "png", "webp"],
+        )
 
-        if st.button("🚀 実行", type="primary") and goal.strip():
-            dish = _detect_dish_consume(goal.strip())
-            if dish:
-                # 料理消費は確認フローへ
-                with st.spinner("Gemini で食材を推定中..."):
+        if prompt:
+            text  = (prompt.text or "").strip()
+            files = prompt.files or []
+
+            # ── 画像あり ──────────────────────────────────────────────────────
+            if files:
+                uploaded    = files[0]
+                image_bytes = uploaded.read()
+                user_text   = text if text else "（画像を送信）"
+                st.session_state[_CHAT_MESSAGES].append({
+                    "role": "user", "content": user_text, "image_bytes": image_bytes,
+                })
+
+                with st.spinner("Gemini で解析中..."):
+                    suffix = Path(uploaded.name).suffix or ".jpg"
+                    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+                        f.write(image_bytes)
+                        tmp_path = f.name
                     try:
-                        est = tools.consume_by_dish_name_tool(goal.strip(), dry_run=True)
-                        if not est["estimated"]:
-                            st.warning("食材を推定できませんでした。別の表現で試してください。")
+                        # テキストにレシート系キーワードがあれば強制レシート判定、なければ自動判別
+                        if any(kw in text for kw in ("レシート", "receipt", "買い物", "購入")):
+                            img_type = "receipt"
                         else:
-                            st.session_state[_DISH_CONFIRM_KEY] = {"dish": est["dish"], "items": est["estimated"]}
-                            st.rerun()
+                            img_type = vision.detect_image_type(tmp_path)
+
+                        if img_type == "receipt":
+                            result = tools.parse_receipt_tool(tmp_path)
+                            if "error" in result:
+                                reply = f"❌ {result['error']}"
+                            else:
+                                lines = []
+                                for item in result["added"]:
+                                    exp = f"（期限: {item['expires_at']}）" if item.get("expires_at") else ""
+                                    lines.append(f"- **{item['name']}** {item['quantity']}{item['unit']} {exp}")
+                                reply = f"✅ レシートから **{result['count']} 件**の食材を在庫に追加しました\n" + "\n".join(lines)
+                            st.session_state[_CHAT_MESSAGES].append({"role": "assistant", "content": reply})
+                        else:
+                            items = vision.recognize_dish(tmp_path)
+                            if not items:
+                                reply = "食材を認識できませんでした。別の写真を試してください。"
+                                st.session_state[_CHAT_MESSAGES].append({"role": "assistant", "content": reply})
+                            else:
+                                dish_label = text if text else "料理写真"
+                                st.session_state[_CHAT_DISH_KEY] = {"dish": dish_label, "items": items}
                     except Exception as e:
-                        err = str(e)
-                        if "503" in err or "UNAVAILABLE" in err:
-                            st.error("⚠️ Gemini が混雑しています。しばらく待ってから再試行してください。")
-                        else:
-                            st.error(f"❌ {err}")
-            else:
-                with st.spinner("エージェントが処理中..."):
-                    result = agent.run_agent(goal.strip())
+                        st.session_state[_CHAT_MESSAGES].append({"role": "assistant", "content": _gemini_error_msg(e)})
 
-                if result.get("fallback"):
-                    st.warning(result["fallback"])
+                st.rerun()
 
-                if result.get("trace"):
-                    with st.expander("🔧 呼び出したTool（マルチベンダー・ルーティング）", expanded=True):
-                        for step in result["trace"]:
-                            st.write(f"- `{step['tool']}` → **{step['backend']}**")
+            # ── テキストのみ ──────────────────────────────────────────────────
+            elif text:
+                st.session_state[_CHAT_MESSAGES].append({"role": "user", "content": text})
 
-                st.divider()
-                st.markdown(result["reply"])
+                dish = _detect_dish_consume(text)
+                if dish:
+                    with st.spinner("Gemini で食材を推定中..."):
+                        try:
+                            est = tools.consume_by_dish_name_tool(text, dry_run=True)
+                            if not est["estimated"]:
+                                st.session_state[_CHAT_MESSAGES].append({
+                                    "role": "assistant",
+                                    "content": "食材を推定できませんでした。別の表現で試してください。",
+                                })
+                            else:
+                                st.session_state[_CHAT_DISH_KEY] = {"dish": est["dish"], "items": est["estimated"]}
+                        except Exception as e:
+                            st.session_state[_CHAT_MESSAGES].append({"role": "assistant", "content": _gemini_error_msg(e)})
+                else:
+                    with st.spinner("エージェントが処理中..."):
+                        result = agent.run_agent(text)
+                    parts = []
+                    if result.get("trace"):
+                        tools_used = "　".join(f"`{s['tool']}` [{s['backend']}]" for s in result["trace"])
+                        parts.append(f"🔧 {tools_used}")
+                    if result.get("fallback"):
+                        parts.append(f"⚠️ {result['fallback']}")
+                    parts.append(result["reply"])
+                    st.session_state[_CHAT_MESSAGES].append({"role": "assistant", "content": "\n\n".join(parts)})
+
+                st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 在庫ページ
