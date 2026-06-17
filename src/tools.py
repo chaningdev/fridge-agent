@@ -24,6 +24,15 @@ def parse_receipt_tool(image_path: str) -> dict:
         return {"error": f"File not found: {image_path}"}
 
     items = vision.parse_receipt(image_path)
+
+    # RAG後処理: ファジーマッチ or 埋め込み検索で食材名・カテゴリを正規化
+    try:
+        from .normalizer import get_normalizer
+        normalizer = get_normalizer()
+        items = [normalizer.normalize_item(item) for item in items]
+    except Exception:
+        pass  # マスタ未構築など — 正規化なしで続行
+
     added = []
     for item in items:
         stored_expiry = db.upsert_item(
@@ -31,6 +40,7 @@ def parse_receipt_tool(image_path: str) -> dict:
             quantity=float(item.get("quantity", 1)),
             unit=item.get("unit", "個"),
             source="receipt",
+            category=item.get("category", ""),
         )
         added.append({**item, "expires_at": stored_expiry})
     return {"added": added, "count": len(added)}

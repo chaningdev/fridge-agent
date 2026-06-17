@@ -1,5 +1,6 @@
 """SQLite-backed inventory store for Fridge Agent."""
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
@@ -47,6 +48,24 @@ def init_db() -> None:
                 unit        TEXT    NOT NULL DEFAULT '',
                 source      TEXT,
                 created_at  TEXT    NOT NULL
+            );
+
+            -- RAG用: 食材マスタ（正規名・別名・カテゴリ・標準保存日数）
+            CREATE TABLE IF NOT EXISTS food_master (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                canonical       TEXT    NOT NULL UNIQUE,
+                aliases         TEXT    NOT NULL DEFAULT '[]',
+                category        TEXT    NOT NULL DEFAULT '',
+                shelf_life_days INTEGER,
+                updated_at      TEXT    NOT NULL
+            );
+
+            -- RAG用: 食材マスタの埋め込みベクトル（text-embedding-3-small）
+            CREATE TABLE IF NOT EXISTS food_embeddings (
+                canonical   TEXT PRIMARY KEY,
+                embedding   TEXT NOT NULL,
+                model       TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
             );
         """)
         # マイグレーション: 既存DBに新カラムを追加（すでにあればスキップ）
@@ -158,6 +177,76 @@ def get_history(limit: int = 50) -> list[dict]:
     with _conn() as con:
         rows = con.execute(
             "SELECT * FROM history ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── 食材マスタ（RAG用） ───────────────────────────────────────────────────────
+
+def build_food_master() -> int:
+    """food_master_data.py のデータをSQLiteに投入・更新する。
+
+    Returns:
+        投入した食材数
+    """
+    from .food_master_data import FOOD_MASTER
+    now = datetime.now().isoformat()
+    with _conn() as con:
+        for item in FOOD_MASTER:
+            con.execute("""
+                INSERT INTO food_master (canonical, aliases, category, shelf_life_days, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(canonical) DO UPDATE SET
+                    aliases         = excluded.aliases,
+                    category        = excluded.category,
+                    shelf_life_days = excluded.shelf_life_days,
+                    updated_at      = excluded.updated_at
+            """, (
+                item["canonical"],
+                json.dumps(item.get("aliases", []), ensure_ascii=False),
+                item.get("category", ""),
+                item.get("shelf_life_days"),
+                now,
+            ))
+    return len(FOOD_MASTER)
+
+
+def get_food_master() -> list[dict]:
+    """food_master テーブルの全件を返す（aliases はリストに変換済み）。"""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT canonical, aliases, category, shelf_life_days FROM food_master ORDER BY canonical"
+        ).fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["aliases"] = json.loads(d["aliases"])
+        except (json.JSONDecodeError, TypeError):
+            d["aliases"] = []
+        result.append(d)
+    return result
+
+
+def save_food_embedding(canonical: str, embedding: list[float], model: str) -> None:
+    """埋め込みベクトルをSQLiteに保存（upsert）。"""
+    now = datetime.now().isoformat()
+    with _conn() as con:
+        con.execute("""
+            INSERT INTO food_embeddings (canonical, embedding, model, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(canonical) DO UPDATE SET
+                embedding  = excluded.embedding,
+                model      = excluded.model,
+                updated_at = excluded.updated_at
+        """, (canonical, json.dumps(embedding), model, now))
+
+
+def get_food_embeddings() -> list[dict]:
+    """food_embeddings テーブルの全件を返す。"""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT canonical, embedding, model FROM food_embeddings ORDER BY canonical"
         ).fetchall()
     return [dict(r) for r in rows]
 

@@ -4,6 +4,7 @@ google-genai>=1.0.0
 openai>=1.30.0
 python-dotenv>=1.0.0
 pandas>=2.0.0          # app.py の履歴ページで使用
+numpy>=1.26.0          # normalizer.py のコサイン類似度計算
 
 # ── 開発・テスト ────────────────────────────────────────
 pytest>=8.0.0

@@ -164,10 +164,38 @@ def _parse_json_response(text: str) -> list[dict]:
     return result
 
 
+def _build_receipt_prompt() -> str:
+    """RAG: 食材マスタの正規名リストをプロンプトに注入して返す。
+
+    マスタが空の場合はベースプロンプトをそのまま返す。
+    Geminiが出力段階で正規名に揃えやすくなる（Augment phase）。
+    """
+    try:
+        from .normalizer import get_canonical_names
+        names = get_canonical_names()
+    except Exception:
+        names = []
+
+    if not names:
+        return _RECEIPT_PROMPT
+
+    name_list = "、".join(names)
+    rag_section = f"""
+
+## 【RAG補助】食材マスタ正規名リスト
+以下の正規名と一致・近似する食材は、このリストの正規名を優先して使用すること:
+{name_list}
+"""
+    # "必ず以下のJSON形式..." の直前に正規名リストを挿入
+    return _RECEIPT_PROMPT.replace(
+        "必ず以下のJSON形式", rag_section + "\n必ず以下のJSON形式"
+    )
+
+
 def parse_receipt(image_path: str | Path) -> list[dict]:
     """Return list of {name, quantity, unit} parsed from a receipt image."""
     img = _load_image_part(image_path)
-    raw = _call_gemini([img, _RECEIPT_PROMPT])
+    raw = _call_gemini([img, _build_receipt_prompt()])
     return _parse_json_response(raw)
 
 
