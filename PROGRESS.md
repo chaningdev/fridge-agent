@@ -3,16 +3,15 @@
 複数PC間でセッションを引き継ぐための作業メモ。
 **作業を再開する人（または Claude）は、まずこのファイルを読むこと。**
 
-最終更新: 2026-06-18
+最終更新: 2026-06-19
 
 ---
 
 ## 🎯 現在の状態
 
-- Day1〜7 を一通り実装完了。**全テスト 39 件パス**（`python -m pytest -q`）。
-- 直近の作業: `src/agent.py`（GPT 自律 Tool 呼び出し）を新規実装し、router / demo / app に配線。README 作成。
-- ここまでの実装はすべてコミット済み・push済み。GitHub: https://github.com/chaningdev/fridge-agent
-- 直近の作業: 食材名RAGノーマライザー実装（`src/normalizer.py` + `src/food_master_data.py`）。全テスト 88 件パス。
+- Day1〜7 + 追加機能（賞味期限・チャットUI・RAG）すべて実装完了。**全テスト 88 件パス**（`python -m pytest -q`）。
+- 直近の作業: README 全面改訂（Mermaid アーキテクチャ図 + Playwright 自動撮影スクリーンショット5枚 + デモセクション追加）。
+- コミット済み・push 済み。GitHub: https://github.com/chaningdev/fridge-agent
 
 ## ✅ 完了済み（Day 別）
 
